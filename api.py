@@ -1,7 +1,8 @@
 import io
 import base64
 from typing import List
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
@@ -13,19 +14,28 @@ from core.ai_vision import load_ai_model, analyze_with_deep_learning
 from core.qr_scanner import scan_payloads
 
 app = FastAPI(title="Document Tamper Detector API", version="1.0.0")
-# Replace the existing CORSMiddleware block in api.py with this:
+
+# Robust CORS setup ensuring headers are always sent, even on errors
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://tampect-frontend.vercel.app",
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "*",
-    ],
-    allow_credentials=False,  # Set to False since token cookies are not being used
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global exception handler to prevent silent 500 crashes and CORS masking
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*"
+        }
+    )
 
 ai_model = load_ai_model()
 
@@ -35,6 +45,17 @@ def image_to_base64(img: Image.Image, format="JPEG") -> str:
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def process_single_image(image: Image.Image, filename: str = "document.jpg") -> dict:
+    # UNIVERSAL FIX: Force convert any image (RGBA, Palette, LA) to standard RGB 
+    # immediately so forensic engines never throw mode errors.
+    if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        if image.mode == 'P':
+            image = image.convert('RGBA')
+        background.paste(image, mask=image.split()[3] if len(image.split()) > 3 else None)
+        image = background
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+
     ela_heatmap, ela_score = generate_ela(image)
     lap_heatmap, lap_var, lap_score = analyze_laplacian_noise(image)
     fft_heatmap, fft_score = analyze_frequency_domain(image)
