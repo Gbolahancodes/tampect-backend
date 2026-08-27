@@ -13,11 +13,16 @@ from core.ai_vision import load_ai_model, analyze_with_deep_learning
 from core.qr_scanner import scan_payloads
 
 app = FastAPI(title="Document Tamper Detector API", version="1.0.0")
-
+# Replace the existing CORSMiddleware block in api.py with this:
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "https://tampect-frontend.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "*",
+    ],
+    allow_credentials=False,  # Set to False since token cookies are not being used
     allow_methods=["*"],
     allow_headers=["*"],
 )

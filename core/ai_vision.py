@@ -11,6 +11,7 @@ def load_ai_model():
 
 def analyze_with_deep_learning(image: Image.Image, ai_model=None):
     if not HF_TOKEN:
+        print("Warning: HF_TOKEN environment variable is not set.")
         return "NO_TOKEN", 0.0, 50.0
 
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
@@ -19,16 +20,25 @@ def analyze_with_deep_learning(image: Image.Image, ai_model=None):
     image.save(img_byte_arr, format='JPEG')
     
     try:
-        response = requests.post(HF_API_URL, headers=headers, data=img_byte_arr.getvalue())
+        response = requests.post(HF_API_URL, headers=headers, data=img_byte_arr.getvalue(), timeout=30)
+        
+        if response.status_code != 200:
+            print(f"HF API returned status {response.status_code}: {response.text}")
+            return "API_ERROR", 0.0, 50.0
+            
         results = response.json()
         
-        top_result = results[0]
-        label = str(top_result.get('label', 'REAL')).upper()
-        confidence = float(top_result.get('score', 0.85)) * 100.0
-        
-        risk_score = confidence if label == "FAKE" else 100.0 - confidence
+        # Ensure results is a list with items
+        if isinstance(results, list) and len(results) > 0:
+            top_result = results[0]
+            label = str(top_result.get('label', 'REAL')).upper()
+            confidence = float(top_result.get('score', 0.85)) * 100.0
+            risk_score = confidence if label == "FAKE" else (100.0 - confidence)
+            return label, round(confidence, 1), round(risk_score, 1)
+        else:
+            print(f"Unexpected HF response format: {results}")
+            return "UNKNOWN", 0.0, 50.0
             
-        return label, round(confidence, 1), round(risk_score, 1)
-        
-    except Exception:
+    except Exception as e:
+        print(f"Inference request error: {str(e)}")
         return "API_ERROR", 0.0, 50.0
