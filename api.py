@@ -1,3 +1,4 @@
+import gc
 import io
 import base64
 from typing import List
@@ -94,5 +95,17 @@ async def analyze_document(file: UploadFile = File(...)):
 
 @app.post("/api/v1/analyze-batch")
 async def analyze_batch(files: List[UploadFile] = File(...)):
-    results = [process_single_image(Image.open(io.BytesIO(await f.read())), f.filename) for f in files]
+    results = []
+    for f in files:
+        contents = await f.read()
+        image = Image.open(io.BytesIO(contents))
+        
+        # Process and append
+        results.append(process_single_image(image, f.filename))
+        
+        # Nuke the heavy objects from RAM immediately to prevent Render crashes
+        del contents
+        del image
+        gc.collect() 
+        
     return {"total_processed": len(results), "documents": results}
