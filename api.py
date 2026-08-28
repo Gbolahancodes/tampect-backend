@@ -1,4 +1,5 @@
 import gc
+import concurrent.futures
 import io
 import base64
 from typing import List
@@ -93,19 +94,28 @@ async def analyze_document(file: UploadFile = File(...)):
     contents = await file.read()
     return process_single_image(Image.open(io.BytesIO(contents)), file.filename)
 
+
+
 @app.post("/api/v1/analyze-batch")
 async def analyze_batch(files: List[UploadFile] = File(...)):
-    results = []
+    # Read all files into memory first
+    file_data = []
     for f in files:
         contents = await f.read()
-        image = Image.open(io.BytesIO(contents))
-        
-        # Process and append
-        results.append(process_single_image(image, f.filename))
-        
-        # Nuke the heavy objects from RAM immediately to prevent Render crashes
-        del contents
-        del image
-        gc.collect() 
-        
+        file_data.append((contents, f.filename))
+
+    # Process images in parallel threads to beat the 30-second Render timeout
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(process_single_image, Image.open(io.BytesIO(contents)), filename)
+            for contents, filename in file_data
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"Batch item failed: {e}")
+
+    gc.collect()
     return {"total_processed": len(results), "documents": results}
