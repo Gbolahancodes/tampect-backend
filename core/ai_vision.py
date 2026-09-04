@@ -3,7 +3,8 @@ import io
 import requests
 from PIL import Image
 
-HF_API_URL = "https://api-inference.huggingface.co/models/dima806/deepfake_vs_real_image_detection"
+# UPDATED: Use the new Hugging Face Router endpoint to fix the NameResolutionError
+HF_API_URL = "https://router.huggingface.co/hf-inference/models/dima806/deepfake_vs_real_image_detection"
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 def load_ai_model():
@@ -17,7 +18,7 @@ def analyze_with_deep_learning(image: Image.Image, ai_model=None):
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     
     try:
-        # FIX 1: Convert RGBA/transparent or palette images to standard RGB 
+        # Convert RGBA/transparent or palette images to standard RGB 
         # so they can be safely saved as JPEGs without crashing.
         if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
             background = Image.new("RGB", image.size, (255, 255, 255))
@@ -31,7 +32,7 @@ def analyze_with_deep_learning(image: Image.Image, ai_model=None):
         img_byte_arr = io.BytesIO()
         image.save(img_byte_arr, format='JPEG')
         
-        # FIX 2: Added a timeout so the server doesn't hang indefinitely
+        # Added a timeout so the server doesn't hang indefinitely
         response = requests.post(
             HF_API_URL, 
             headers=headers, 
@@ -41,7 +42,6 @@ def analyze_with_deep_learning(image: Image.Image, ai_model=None):
         
         if response.status_code != 200:
             print(f"HF API Error {response.status_code}: {response.text}")
-            # Graceful fallback score so the batch keeps running even if HF throttles
             return "API_THROTTLED", 0.0, 30.0
             
         results = response.json()
@@ -57,5 +57,4 @@ def analyze_with_deep_learning(image: Image.Image, ai_model=None):
             
     except Exception as e:
         print(f"Inference request error (Handled gracefully): {str(e)}")
-        # Graceful fallback fallback so batch processing doesn't throw a 500 error
         return "FALLBACK", 0.0, 30.0
