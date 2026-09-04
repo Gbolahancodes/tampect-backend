@@ -15,7 +15,10 @@ def analyze_with_deep_learning(image: Image.Image, ai_model=None):
         print("Warning: HF_TOKEN environment variable is not set.")
         return "NO_TOKEN", 0.0, 50.0
 
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "image/jpeg"
+    }
     
     try:
         # Convert RGBA/transparent or palette images to standard RGB 
