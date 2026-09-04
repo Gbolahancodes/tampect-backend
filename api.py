@@ -86,15 +86,14 @@ def process_single_image(image: Image.Image, filename: str = "document.jpg") -> 
         "heatmaps": {"ela_base64": image_to_base64(ela_heatmap), "laplacian_base64": image_to_base64(lap_heatmap), "fft_base64": image_to_base64(fft_heatmap)}
     }
 
-@app.get("/api/v1/health")
+# RENAMED from /api/v1/health to /api/v1/status to fix the ERR_BLOCKED_BY_CLIENT adblocker issue
+@app.get("/api/v1/status")
 async def health_check(): return {"status": "online"}
 
 @app.post("/api/v1/analyze")
 async def analyze_document(file: UploadFile = File(...)):
     contents = await file.read()
     return process_single_image(Image.open(io.BytesIO(contents)), file.filename)
-
-
 
 @app.post("/api/v1/analyze-batch")
 async def analyze_batch(files: List[UploadFile] = File(...)):
