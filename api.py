@@ -1,5 +1,4 @@
 import gc
-import concurrent.futures
 import io
 import base64
 from typing import List
@@ -17,16 +16,16 @@ from core.qr_scanner import scan_payloads
 
 app = FastAPI(title="Tampect API")
 
-# 1. Standard CORS Middleware
+# 1. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows your Vercel frontend to connect
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 2. Global Exception Handler (Prevents CORS masking on 500 errors)
+# 2. Global Exception Handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
@@ -47,24 +46,38 @@ def image_to_base64(img: Image.Image, format="JPEG") -> str:
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def process_single_image(image: Image.Image, filename: str = "document.jpg") -> dict:
-    # 3. Prevent crashes from transparent PNGs/GIFs
+    # Extract metadata FIRST while EXIF is fully intact
+    metadata, flags, meta_score = extract_metadata(image)
+
+    # Downscale in-memory to max 1280px to protect 512MB RAM ceiling
+    MAX_DIMENSION = 1280
+    if max(image.size) > MAX_DIMENSION:
+        image.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.Resampling.LANCZOS)
+
+    # Handle transparency
     if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
         bg = Image.new("RGB", image.size, (255, 255, 255))
-        if image.mode == 'P': image = image.convert('RGBA')
+        if image.mode == 'P': 
+            image = image.convert('RGBA')
         bg.paste(image, mask=image.split()[3] if len(image.split()) > 3 else None)
         image = bg
     elif image.mode != 'RGB':
         image = image.convert('RGB')
 
+    # Run analytical engines sequentially
     ela_heatmap, ela_score = generate_ela(image)
     lap_heatmap, lap_var, lap_score = analyze_laplacian_noise(image)
     fft_heatmap, fft_score = analyze_frequency_domain(image)
-    metadata, flags, meta_score = extract_metadata(image)
     qr_data = scan_payloads(image)
     ai_label, ai_conf, ai_risk = analyze_with_deep_learning(image, ai_model)
 
     is_screenshot = (meta_score == 65.0) and (ela_score < 15.0)
-    master_risk = round((0.20 * fft_score) + (0.80 * ai_risk) if is_screenshot else (0.10 * ela_score) + (0.10 * lap_score) + (0.15 * fft_score) + (0.25 * meta_score) + (0.40 * ai_risk), 1)
+    master_risk = round(
+        (0.20 * fft_score) + (0.80 * ai_risk) 
+        if is_screenshot 
+        else (0.10 * ela_score) + (0.10 * lap_score) + (0.15 * fft_score) + (0.25 * meta_score) + (0.40 * ai_risk), 
+        1
+    )
 
     if master_risk >= 45.0:
         verdict, analysis = "HIGH_RISK_FORGERY", "Deep learning models, Laplacian noise anomalies, or modified metadata indicate high tampering probability."
@@ -73,48 +86,63 @@ def process_single_image(image: Image.Image, filename: str = "document.jpg") -> 
     else:
         verdict, analysis = "LOW_RISK_AUTHENTIC", "Pixel physics, metadata integrity, and neural network inference confirm authentic provenance."
 
-    return {
+    response_payload = {
         "filename": filename,
         "verdict": verdict,
         "master_risk_score": master_risk,
         "document_type": "Digital Screenshot" if is_screenshot else "Camera Photograph",
         "analysis_text": analysis,
         "quality_alerts": {"is_screenshot": is_screenshot, "is_blurry": lap_var < 50.0},
-        "scores": {"ela_score": ela_score, "laplacian_variance": lap_var, "laplacian_score": lap_score, "fft_score": fft_score, "metadata_score": meta_score, "ai_risk_score": ai_risk, "ai_confidence": ai_conf, "ai_classification": ai_label},
+        "scores": {
+            "ela_score": ela_score, 
+            "laplacian_variance": lap_var, 
+            "laplacian_score": lap_score, 
+            "fft_score": fft_score, 
+            "metadata_score": meta_score, 
+            "ai_risk_score": ai_risk, 
+            "ai_confidence": ai_conf, 
+            "ai_classification": ai_label
+        },
         "metadata": {"flags": flags, "raw_exif": metadata},
         "qr_payloads": qr_data,
-        "heatmaps": {"ela_base64": image_to_base64(ela_heatmap), "laplacian_base64": image_to_base64(lap_heatmap), "fft_base64": image_to_base64(fft_heatmap)}
+        "heatmaps": {
+            "ela_base64": image_to_base64(ela_heatmap), 
+            "laplacian_base64": image_to_base64(lap_heatmap), 
+            "fft_base64": image_to_base64(fft_heatmap)
+        }
     }
 
-# RENAMED from /api/v1/health to /api/v1/status to fix the ERR_BLOCKED_BY_CLIENT adblocker issue
+    # Free matrix references
+    del ela_heatmap, lap_heatmap, fft_heatmap
+    return response_payload
+
 @app.get("/api/v1/status")
-async def health_check(): return {"status": "online"}
+async def health_check(): 
+    return {"status": "online"}
 
 @app.post("/api/v1/analyze")
 async def analyze_document(file: UploadFile = File(...)):
     contents = await file.read()
-    return process_single_image(Image.open(io.BytesIO(contents)), file.filename)
+    try:
+        image = Image.open(io.BytesIO(contents))
+        return process_single_image(image, file.filename)
+    finally:
+        del contents
+        gc.collect()
 
 @app.post("/api/v1/analyze-batch")
 async def analyze_batch(files: List[UploadFile] = File(...)):
-    # Read all files into memory first
-    file_data = []
+    results = []
+    # Process sequentially on 512MB RAM to avoid multi-thread OOM spikes
     for f in files:
         contents = await f.read()
-        file_data.append((contents, f.filename))
+        try:
+            image = Image.open(io.BytesIO(contents))
+            results.append(process_single_image(image, f.filename))
+        except Exception as e:
+            print(f"Batch item failed: {e}")
+        finally:
+            del contents
+            gc.collect()
 
-    # Process images in parallel threads to beat the 30-second Render timeout
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [
-            executor.submit(process_single_image, Image.open(io.BytesIO(contents)), filename)
-            for contents, filename in file_data
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception as e:
-                print(f"Batch item failed: {e}")
-
-    gc.collect()
     return {"total_processed": len(results), "documents": results}
